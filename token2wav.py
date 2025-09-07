@@ -1,10 +1,12 @@
 import io
-
+import time
 import torch
 import torchaudio
 import s3tokenizer
 import onnxruntime
 import numpy as np
+from pathlib import Path
+import wave
 
 import torchaudio.compliance.kaldi as kaldi
 from flashcosyvoice.modules.hifigan import HiFTGenerator
@@ -17,7 +19,12 @@ class Token2wav():
     def __init__(self, model_path, float16=False):
         self.float16 = float16
 
-        self.audio_tokenizer = s3tokenizer.load_model(f"{model_path}/speech_tokenizer_v2_25hz.onnx").cuda().eval()
+        self.audio_tokenizer = s3tokenizer.load_model(f"{model_path}/speech_tokenizer_v2_25hz.onnx")
+
+        self.device = "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+        self.audio_tokenizer.to(self.device).eval()
 
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -30,12 +37,12 @@ class Token2wav():
         if float16:
             self.flow.half()
         self.flow.load_state_dict(torch.load(f"{model_path}/flow.pt", map_location="cpu", weights_only=True), strict=True)
-        self.flow.cuda().eval()
+        self.flow.to(self.device).eval()
 
         self.hift = HiFTGenerator()
         hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(f"{model_path}/hift.pt", map_location="cpu", weights_only=True).items()}
         self.hift.load_state_dict(hift_state_dict, strict=True)
-        self.hift.cuda().eval()
+        self.hift.to(self.device).eval()
 
         self.cache = {}
 
@@ -43,21 +50,24 @@ class Token2wav():
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
         mels = s3tokenizer.log_mel_spectrogram(audio)
         mels, mels_lens = s3tokenizer.padding([mels])
-        prompt_speech_tokens, prompt_speech_tokens_lens = self.audio_tokenizer.quantize(mels.cuda(), mels_lens.cuda())
+        prompt_speech_tokens, prompt_speech_tokens_lens = self.audio_tokenizer.quantize(mels.to(self.device), mels_lens.to(self.device))
 
         spk_feat = kaldi.fbank(audio.unsqueeze(0), num_mel_bins=80, dither=0, sample_frequency=16000)
         spk_feat = spk_feat - spk_feat.mean(dim=0, keepdim=True)
         spk_emb = torch.tensor(self.spk_model.run(
             None, {self.spk_model.get_inputs()[0].name: spk_feat.unsqueeze(dim=0).cpu().numpy()}
-        )[0], device='cuda')
+        )[0], device=self.device)
 
         audio, sample_rate = torchaudio.load(prompt_wav, backend='soundfile')
         audio = audio.mean(dim=0, keepdim=True)  # [1, T]
         if sample_rate != 24000:
             audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
-        prompt_mel = mel_spectrogram(audio).transpose(1, 2).squeeze(0)  # [T, num_mels]
-        prompt_mels = prompt_mel.unsqueeze(0).cuda()
-        prompt_mels_lens = torch.tensor([prompt_mels.shape[1]], dtype=torch.int32, device='cuda')
+        prompt_mel = mel_spectrogram(audio)# [1, num_mels, T]
+        prompt_mel = prompt_mel.transpose(1, 2)  # [1, T, num_mels]
+        # prompt_mel = prompt_mel.squeeze(0)  # [T, num_mels]
+        prompt_mels = prompt_mel.to(self.device)
+        # print(audio.shape, prompt_mels.shape)
+        prompt_mels_lens = torch.tensor([prompt_mels.shape[1]], dtype=torch.int32, device=self.device)
         return prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens
 
     def __call__(self, generated_speech_tokens, prompt_wav):
@@ -65,10 +75,10 @@ class Token2wav():
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
         prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
 
-        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
-        generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device='cuda')
+        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device=self.device)
+        generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device=self.device)
 
-        with torch.amp.autocast("cuda", dtype=torch.float16 if self.float16 else torch.float32):
+        with torch.amp.autocast(self.device, dtype=torch.float16 if self.float16 else torch.float32):
             mel = self.flow.inference(generated_speech_tokens, generated_speech_tokens_lens,
                 prompt_speech_tokens, prompt_speech_tokens_lens,
                 prompt_mels, prompt_mels_lens, spk_emb, 10)
@@ -83,22 +93,25 @@ class Token2wav():
         if prompt_wav not in self.cache:
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
         prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
-        self.stream_cache = self.flow.setup_cache(
-            torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1),
-            prompt_mels, spk_emb, n_timesteps=10)
+        token = torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1)
+        size = (token.shape[1] - self.flow.pre_lookahead_len) * self.flow.up_rate
+        if size > prompt_mels.shape[1]:
+            #print("prompt_mels pad", size, prompt_mels.shape[1])
+            prompt_mels = torch.nn.functional.pad(prompt_mels, (0, 0, 0, size - prompt_mels.shape[1]))
+        self.stream_cache = self.flow.setup_cache(token, prompt_mels, spk_emb, n_timesteps=10)
 
     def stream(self, generated_speech_tokens, prompt_wav, last_chunk=False):
         if prompt_wav not in self.cache:
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
         prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
 
-        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
-        generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device='cuda')
+        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device=self.device)
+        generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device=self.device)
 
         if self.stream_cache is None:
             raise ValueError("stream_cache is not set")
 
-        with torch.amp.autocast("cuda", dtype=torch.float16 if self.float16 else torch.float32):
+        with torch.amp.autocast(self.device, dtype=torch.float16 if self.float16 else torch.float32):
             chunk_mel, self.stream_cache = self.flow.inference_chunk(
                 token=generated_speech_tokens,
                 spk=spk_emb,
@@ -120,10 +133,59 @@ class Token2wav():
         pcm_bytes = wav_int16.tobytes()
         return pcm_bytes
 
-if __name__ == '__main__':
-    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
+def test_stream(token2wav:Token2wav):
+    prompt_wav = "assets/default_male.wav"
+    #prompt_wav = "assets/default_female.wav"
+    token2wav.set_stream_cache(prompt_wav)
+    tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
 
+    buffer = []
+    pcm = b""
+    CHUNK_SIZE = 25
+
+    output_file = Path("output-chunks-stream-tts.wav")
+    output_file.unlink(missing_ok=True)
+
+    for audio_token_id in tokens:
+        buffer.append(audio_token_id)
+        if len(buffer) >= CHUNK_SIZE + token2wav.flow.pre_lookahead_len:
+            start = time.time()
+            output = token2wav.stream(
+                buffer[: CHUNK_SIZE + token2wav.flow.pre_lookahead_len],
+                prompt_wav=prompt_wav,
+                last_chunk=False,
+            )
+            print(len(buffer), len(output), output[:50],time.time()-start)
+            pcm += output
+            buffer = buffer[CHUNK_SIZE:]
+
+    if len(buffer) > 0:
+        start = time.time()
+        output = token2wav.stream(buffer, prompt_wav=prompt_wav, last_chunk=True)
+        print("last_chunk", len(buffer), len(output), output[:50], time.time()-start)
+        pcm += output
+    with wave.open(str(output_file), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(pcm)
+
+def test_token2wav(token2wav:Token2wav):
     tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
     audio = token2wav(tokens, 'assets/default_male.wav')
-    with open('assets/give_me_a_brief_introduction_to_the_great_wall.wav', 'wb') as f:
+    with open('give_me_a_brief_introduction_to_the_great_wall.wav', 'wb') as f:
         f.write(audio)
+
+"""
+python -m token2wav
+TEST_FUNC=test_stream python -m token2wav
+"""
+if __name__ == '__main__':
+    import os
+
+    # huggingface-cli download stepfun-ai/Step-Audio-2-mini --include token2wav/ --local-dir ./models/stepfun-ai/Step-Audio-2-mini
+    token2wav = Token2wav('models/stepfun-ai/Step-Audio-2-mini/token2wav')
+
+    test_func = os.getenv("TEST_FUNC","test_token2wav")
+    globals()[test_func](token2wav)
+
