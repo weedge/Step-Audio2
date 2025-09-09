@@ -405,6 +405,7 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
             xs = self.after_norm(xs)
         return xs, masks
 
+    @torch.inference_mode()
     @torch.compile(dynamic=True, backend="eager")
     def forward_chunk(self,
                       xs: torch.Tensor,

@@ -89,3 +89,12 @@ def padding_mels(data: List[torch.Tensor]):
                                 padding_value=0)
 
     return padded_feats.transpose(1, 2), feats_lengths
+
+if __name__ == "__main__":
+    # Test the functions
+    audio = load_audio("assets/default_male.wav")
+    print(type(audio), audio.shape,audio.dtype)
+    mel_spec = log_mel_spectrogram(audio)
+    print("Mel spectrogram shape:", mel_spec.shape)
+    token_num = compute_token_num(mel_spec.shape[1])
+    print("Computed token number:", token_num)

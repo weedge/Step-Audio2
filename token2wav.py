@@ -15,6 +15,8 @@ from hyperpyyaml import load_hyperpyyaml
 
 
 class Token2wav():
+    CHUNK_SIZE = 25
+    WARMUP_TOKENS = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
 
     def __init__(self, model_path, float16=False):
         self.float16 = float16
@@ -132,32 +134,34 @@ class Token2wav():
         wav_int16 = (wav_np * 32767.0).astype('<i2')  # 16-bit little-endian PCM
         pcm_bytes = wav_int16.tobytes()
         return pcm_bytes
+    
+    def warmup(self, prompt_wav):
+        self.stream(self.WARMUP_TOKENS[:self.CHUNK_SIZE + self.flow.pre_lookahead_len], prompt_wav=prompt_wav) # Warm up
 
-def test_stream(token2wav:Token2wav):
+def test_stream(token2wav: Token2wav):
     prompt_wav = "assets/default_male.wav"
     #prompt_wav = "assets/default_female.wav"
     token2wav.set_stream_cache(prompt_wav)
-    tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
+    token2wav.warmup(prompt_wav)
 
     buffer = []
     pcm = b""
-    CHUNK_SIZE = 25
 
     output_file = Path("output-chunks-stream-tts.wav")
     output_file.unlink(missing_ok=True)
 
-    for audio_token_id in tokens:
+    for audio_token_id in token2wav.WARMUP_TOKENS:
         buffer.append(audio_token_id)
-        if len(buffer) >= CHUNK_SIZE + token2wav.flow.pre_lookahead_len:
+        if len(buffer) >= token2wav.CHUNK_SIZE + token2wav.flow.pre_lookahead_len:
             start = time.time()
             output = token2wav.stream(
-                buffer[: CHUNK_SIZE + token2wav.flow.pre_lookahead_len],
+                buffer[: token2wav.CHUNK_SIZE + token2wav.flow.pre_lookahead_len],
                 prompt_wav=prompt_wav,
                 last_chunk=False,
             )
             print(len(buffer), len(output), output[:50],time.time()-start)
             pcm += output
-            buffer = buffer[CHUNK_SIZE:]
+            buffer = buffer[token2wav.CHUNK_SIZE:]
 
     if len(buffer) > 0:
         start = time.time()
@@ -171,8 +175,7 @@ def test_stream(token2wav:Token2wav):
         wf.writeframes(pcm)
 
 def test_token2wav(token2wav:Token2wav):
-    tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
-    audio = token2wav(tokens, 'assets/default_male.wav')
+    audio = token2wav(token2wav.WARMUP_TOKENS, 'assets/default_male.wav')
     with open('give_me_a_brief_introduction_to_the_great_wall.wav', 'wb') as f:
         f.write(audio)
 

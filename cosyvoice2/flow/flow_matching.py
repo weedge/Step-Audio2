@@ -170,6 +170,7 @@ class CausalConditionalCFM(torch.nn.Module):
         return x, cnn_cache, att_cache
     
     @torch.inference_mode()
+    #@torch.compile(dynamic=True,backend="eager")
     def forward_chunk(self, 
                       mu:torch.Tensor, 
                       spks:torch.Tensor, 

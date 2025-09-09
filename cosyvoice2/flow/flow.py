@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -193,16 +194,19 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
 
         token = self.input_embedding(token)
         # if not the last chunk, h is shorter than xs for a length of lookahead_length * stride (6)
+        start = time.time()
         h, conformer_cnn_cache, conformer_att_cache = self.encoder.forward_chunk(
             xs = token,
             last_chunk = last_chunk,
             cnn_cache = conformer_cnn_cache,
             att_cache = conformer_att_cache,
         )
+        print("encoder.forward_chunk",time.time()-start)
         h = self.encoder_proj(h)
 
         cond = torch.zeros_like(h)
         # forward estimator
+        start = time.time()
         feat, estimator_cnn_cache, estimator_att_cache = self.decoder.forward_chunk(
             mu = h.transpose(1, 2).contiguous(),
             spks = spk,
@@ -212,6 +216,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cnn_cache = estimator_cnn_cache,
             att_cache = estimator_att_cache,
         )
+        print("decoder.forward_chunk",time.time()-start)
 
 
         new_cache = {
