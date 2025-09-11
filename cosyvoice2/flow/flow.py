@@ -201,7 +201,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cnn_cache = conformer_cnn_cache,
             att_cache = conformer_att_cache,
         )
-        print("encoder.forward_chunk",time.time()-start)
+        # print("encoder.forward_chunk",time.time()-start)
         h = self.encoder_proj(h)
 
         cond = torch.zeros_like(h)
@@ -216,7 +216,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cnn_cache = estimator_cnn_cache,
             att_cache = estimator_att_cache,
         )
-        print("decoder.forward_chunk",time.time()-start)
+        # print("decoder.forward_chunk",time.time()-start)
 
 
         new_cache = {
