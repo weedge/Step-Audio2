@@ -81,8 +81,9 @@ class StepAudio2:
 if __name__ == "__main__":
     from token2wav import Token2wav
 
-    model = StepAudio2("http://localhost:8000/v1/chat/completions", "step-audio-2-mini")
-    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
+    #model = StepAudio2("http://localhost:8000/v1/chat/completions", "step-audio-2-mini")
+    model = StepAudio2("https://weedge--vllm-step-audio2-serve-dev.modal.run/v1/chat/completions", "step-audio-2-mini")
+    token2wav = Token2wav('../../models/stepfun-ai/Step-Audio-2-mini/token2wav')
 
     sampling_params = {
         "max_tokens": 1024,
