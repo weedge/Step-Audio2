@@ -4,6 +4,7 @@ def stream_client(model, history, tools, token2wav=None, output_stream=None, pro
     response = {"tts_content": {"tts_text": '', "tts_audio": ''}, "tool_calls": []}
     buffer = []
     for line, text, audio in model.stream(history, tools=tools, max_tokens=4096, repetition_penalty=1.05, top_p=0.9, temperature=0.7):
+        print(f"{line=} {text=} {audio=}")
         if len(line.get("tool_calls", [])) > 0:
             if len(response["tool_calls"]) == 0:
                 response["tool_calls"] += line["tool_calls"]
@@ -12,10 +13,10 @@ def stream_client(model, history, tools, token2wav=None, output_stream=None, pro
         else:
             if text:
                 response["tts_content"]["tts_text"] += text
-                print(text, end='', flush=True)
+                #print(text, end='', flush=True)
             if audio:
                 response["tts_content"]["tts_audio"] += line.get("tts_content", {}).get("tts_audio", '')
-                print(audio, end='', flush=True)
+                #print(audio, end='', flush=True)
                 if output_stream:
                     buffer += audio
                     if len(buffer) >= CHUNK_SIZE + token2wav.flow.pre_lookahead_len:
@@ -27,6 +28,7 @@ def stream_client(model, history, tools, token2wav=None, output_stream=None, pro
         output = token2wav.stream(buffer, prompt_wav=prompt_wav, last_chunk=True)
         with open(output_stream, 'ab') as f:
             f.write(output)
+    print(response)
     return response
 
 if __name__ == "__main__":
@@ -36,13 +38,14 @@ if __name__ == "__main__":
     from pathlib import Path
     from token2wav import Token2wav
 
-    api_url = "http://localhost:8000/v1/chat/completions"
-    model_name = "step-audio-2-mini"
-    prompt_wav = "assets/default_female.wav"
 
-    model = StepAudio2(api_url, model_name)
-    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
+    #model = StepAudio2("http://localhost:8000/v1/chat/completions", "step-audio-2-mini")
+    model = StepAudio2("https://weedge--vllm-step-audio2-serve-dev.modal.run/v1/chat/completions", "step-audio-2-mini")
+    token2wav = Token2wav('../../models/stepfun-ai/Step-Audio-2-mini/token2wav')
+
     tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
+
+    prompt_wav = "assets/default_female.wav"
     token2wav.set_stream_cache(prompt_wav)
     token2wav.stream(tokens[:CHUNK_SIZE + token2wav.flow.pre_lookahead_len], prompt_wav=prompt_wav) # Warm up
 

@@ -136,6 +136,7 @@ if __name__ == "__main__":
         {"role": "assistant", "content": "<tts_start>", "eot": False},  # Insert <tts_start> for speech response
     ]
     response, text, audio = model(messages, **sampling_params)
+    print(f"s2s {response=}")
     print(text)
     print(audio)
     audio = token2wav(audio, prompt_wav='assets/default_female.wav')
@@ -151,6 +152,7 @@ if __name__ == "__main__":
         {"role": "assistant", "content": None}
     ]
     response, text, audio = model(messages, **sampling_params)
+    print(f"Multi-turn conversation {response=}")
     print(text)
 
     # Multi-modal inputs

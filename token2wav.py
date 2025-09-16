@@ -1,13 +1,14 @@
 import io
 import time
-import torch
-import torchaudio
-import s3tokenizer
-import onnxruntime
-import numpy as np
+import logging
 from pathlib import Path
 import wave
 
+import numpy as np
+import s3tokenizer
+import onnxruntime
+import torch
+import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from flashcosyvoice.modules.hifigan import HiFTGenerator
 from flashcosyvoice.utils.audio import mel_spectrogram
@@ -18,9 +19,10 @@ class Token2wav():
     CHUNK_SIZE = 25
     WARMUP_TOKENS = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
 
-    def __init__(self, model_path, float16=False):
+    def __init__(self, model_path, float16=False, warmup_cn:int=2, prompt_wav:str="assets/default_female.wav"):
         self.float16 = float16
 
+        logging.info(f"init token2wav ...")
         self.audio_tokenizer = s3tokenizer.load_model(f"{model_path}/speech_tokenizer_v2_25hz.onnx")
 
         self.device = "cpu"
@@ -41,12 +43,25 @@ class Token2wav():
         self.flow.load_state_dict(torch.load(f"{model_path}/flow.pt", map_location="cpu", weights_only=True), strict=True)
         self.flow.to(self.device).eval()
 
+        if torch.cuda.is_available():
+            logging.info(f"move token2wav flow to cuda and scatter_cuda_graph ...")
+            self.flow.scatter_cuda_graph(True)
+
         self.hift = HiFTGenerator()
         hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(f"{model_path}/hift.pt", map_location="cpu", weights_only=True).items()}
         self.hift.load_state_dict(hift_state_dict, strict=True)
         self.hift.to(self.device).eval()
 
         self.cache = {}
+
+        self.set_stream_cache(prompt_wav)
+        if warmup_cn > 0:
+            for i in range(warmup_cn):
+                start = time.time()
+                self.warmup(prompt_wav)
+                logging.info(f"Token2wav warmup {i=} done in {time.time() - start:.3f}s")
+
+
 
     def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
@@ -60,7 +75,7 @@ class Token2wav():
             None, {self.spk_model.get_inputs()[0].name: spk_feat.unsqueeze(dim=0).cpu().numpy()}
         )[0], device=self.device)
 
-        audio, sample_rate = torchaudio.load(prompt_wav, backend='soundfile')
+        audio, sample_rate = torchaudio.load(prompt_wav, backend='ffmpeg')
         audio = audio.mean(dim=0, keepdim=True)  # [1, T]
         if sample_rate != 24000:
             audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
@@ -92,6 +107,7 @@ class Token2wav():
         return output.getvalue()
 
     def set_stream_cache(self, prompt_wav):
+        logging.info(f"set_stream_cache {prompt_wav}")
         if prompt_wav not in self.cache:
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
         prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
