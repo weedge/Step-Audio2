@@ -11,7 +11,8 @@
 </div>
 <div align="center">
   <a href="https://huggingface.co/stepfun-ai/Step-Audio-2-mini"><img src="https://img.shields.io/static/v1?label=Step-Audio-2-mini&message=HuggingFace&color=yellow"></a> &ensp;
-  <a href="https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base"><img src="https://img.shields.io/static/v1?label=Step-Audio-2-mini-Base&message=HuggingFace&color=yellow"></a>
+  <a href="https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base"><img src="https://img.shields.io/static/v1?label=Step-Audio-2-mini-Base&message=HuggingFace&color=yellow"></a> &ensp;
+  <a href="https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Think"><img src="https://img.shields.io/static/v1?label=Step-Audio-2-mini-Think&message=HuggingFace&color=yellow"></a>
 </div>
 <div align="center">
   <a href="https://arxiv.org/abs/2507.16632"><img src="assets/arxiv.svg"></a> &ensp;
@@ -20,6 +21,7 @@
 
 ## 🔥🔥🔥 News!!
 <!-- * Aug 29, 2025: 👋 We release the  # TODO -->
+* Sep 15, 2025: 👋 We release [Step-Audio 2 mini Think](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Think) and its corresponding [examples](examples-think.py).
 * Sep 3, 2025: 👋 We release our [vLLM backend](https://github.com/stepfun-ai/vllm/tree/step-audio2-mini) and corresponding [examples](examples-vllm.py).
 * Aug 29, 2025: 👋 We are pleased to open-source [Step-Audio 2 mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini), [Step-Audio 2 mini Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) and their corresponding inference [examples](examples.py). [Technical report](https://arxiv.org/pdf/2507.16632) is also updated.
 * Jul 24, 2025: 👋 We release [demonstration videos for Step-Audio 2](https://www.stepfun.com/docs/step-audio2).
@@ -42,17 +44,20 @@ Step-Audio 2 is an end-to-end multi-modal large language model designed for indu
 
 - **Intelligent Speech Conversation**: Achieving natural and intelligent interactions that are contextually appropriate for various conversational scenarios and paralinguistic information.
 
+- **Emotional Reasoning**: Analyzing user's paralinguistic information such as age and emotion, leading to more accurate and intelligent interpretation of the audio context.
+
 - **Tool Calling and Multimodal RAG**: By leveraging tool calling and RAG to access real-world knowledge (both textual and acoustic), Step-Audio 2 can generate responses with fewer hallucinations for diverse scenarios, while also having the ability to switch timbres based on retrieved speech.
 
 - **State-of-the-Art Performance**: Achieving state-of-the-art performance on various audio understanding and conversational benchmarks compared to other open-source and commercial solutions. (See [Evaluation](#evaluation) and [Technical Report](https://arxiv.org/pdf/2507.16632)).
 
-+ **Open-source**: [Step-Audio 2 mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini) and [Step-Audio 2 mini Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) are released under [Apache 2.0](LICENSE) license.
++ **Open-source**: [Step-Audio 2 mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini), [Step-Audio 2 mini Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) and [Step-Audio 2 mini Think](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Think) are released under [Apache 2.0](LICENSE) license.
 
 ## Model Download
 | Models   | 🤗 Hugging Face | ModelScope |
 |-------|-------|-------|
 | Step-Audio 2 mini | [stepfun-ai/Step-Audio-2-mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini) | [stepfun-ai/Step-Audio-2-mini](https://www.modelscope.cn/models/stepfun-ai/Step-Audio-2-mini) |
 | Step-Audio 2 mini Base | [stepfun-ai/Step-Audio-2-mini-Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) | [stepfun-ai/Step-Audio-2-mini-Base](https://www.modelscope.cn/models/stepfun-ai/Step-Audio-2-mini-Base) |
+| Step-Audio 2 mini Think | [stepfun-ai/Step-Audio-2-mini-Think](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Think) | [stepfun-ai/Step-Audio-2-mini-Think](https://www.modelscope.cn/models/stepfun-ai/Step-Audio-2-mini-Think) |
 
 
 ## Model Usage
@@ -79,13 +84,13 @@ We highly recommend using our vLLM backend for faster and streaming inference, a
 
 ```bash
 # (Optional) build the docker image yourself (very slow and requires 32GiB of memory)
-# docker build -t stepfun2025/vllm:step-audio-2-v20250904 .
+# docker build -t stepfun2025/vllm:step-audio-2-v20250909 .
 
 # run vLLM docker
 docker run --rm -ti --gpus all \
     -v Step-Audio-2-mini:/Step-Audio-2-mini \
     -p 8000:8000 \
-    stepfun2025/vllm:step-audio-2-v20250904 \
+    stepfun2025/vllm:step-audio-2-v20250909 \
     -- vllm serve /Step-Audio-2-mini \
     --served-model-name step-audio-2-mini \
     --port 8000 \
@@ -106,6 +111,7 @@ docker run --rm -ti --gpus all \
 python examples.py
 # python examples-base.py
 # python examples-vllm.py
+# python examples-think.py
 ```
 
 ### 🚀 Local web demonstration
@@ -557,6 +563,35 @@ MMAU
       <td align="center">76.6</td>
       <td align="center">71.5</td>
       <td align="center">71.6</td>
+    </tr>
+  </tbody>
+</table>
+
+Big Bench Audio
+
+<table border="1" cellpadding="7" cellspacing="0" align="center">
+  <thead>
+    <tr>
+      <th align="center">Model</th>
+      <th align="center">Accuracy</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="left"><strong>GPT-Realtime</strong></td>
+      <td align="center">82.8</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2 mini</strong></td>
+      <td align="center">54.8</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2</strong></td>
+      <td align="center">80.0</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2 Think</strong></td>
+      <td align="center"><strong>90.7</strong></td>
     </tr>
   </tbody>
 </table>
