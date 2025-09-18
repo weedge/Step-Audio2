@@ -54,7 +54,7 @@ class Token2wav():
         self.flow.load_state_dict(torch.load(f"{model_path}/flow.pt", map_location="cpu", weights_only=True), strict=True)
         self.flow.to(self.device).eval()
 
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and kwargs.get("cuda_graph", False):
             logging.info(f"move token2wav flow to cuda and scatter_cuda_graph ...")
             self.flow.scatter_cuda_graph(True)
 
@@ -74,10 +74,11 @@ class Token2wav():
         # hifigan cache
         self.hift_cache_dict = {}
 
+        self._verbose = kwargs.get("verbose", False)
+
         if kwargs.get("warmup_cn", 0) > 0:
             self.warmup(prompt_wav, kwargs.get("warmup_cn"))
 
-        self._verbose = kwargs.get("verbose", False)
 
     def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
@@ -148,7 +149,12 @@ class Token2wav():
             logging.warning("stream_cache is not set, then set it")
             self.set_stream_cache(prompt_wav)
 
+        if self._verbose is True:
+            for k, v in self.stream_cache.items():
+                print(f"{k}: {v.shape}")
+        
         with torch.amp.autocast(self.device, dtype=torch.float16 if self.float16 else torch.float32):
+            start = time.time()
             chunk_mel, self.stream_cache = self.flow.inference_chunk(
                 token=generated_speech_tokens,
                 spk=spk_emb,
@@ -156,6 +162,9 @@ class Token2wav():
                 last_chunk=last_chunk,
                 n_timesteps=10,
             )
+            elapsed = time.time() - start
+            if self._verbose is True:
+                print(f"flow inference_chunk time: {elapsed:.3f}s")
         if self.stream_cache['estimator_att_cache'].shape[4] > (prompt_mels.shape[1] + 100):
             self.stream_cache['estimator_att_cache'] = torch.cat([
                 self.stream_cache['estimator_att_cache'][:, :, :, :, :prompt_mels.shape[1]],
@@ -168,7 +177,11 @@ class Token2wav():
         hift_cache_speech = self.hift_cache_dict['speech']
         mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
 
+        start = time.time()
         speech, source = self.hift(mel, hift_cache_source)
+        elapsed = time.time() - start
+        if self._verbose is True:
+            print(f"hift inference_chunk time: {elapsed:.3f}s")
 
         # overlap speech smooth
         if hift_cache_speech.shape[-1] > 0:

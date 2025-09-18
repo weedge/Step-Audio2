@@ -159,6 +159,7 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         # attention
         attention_heads: int = 4,
         pos_enc_layer_type: str = "rel_pos_espnet",
+        pos_max_len: int = 10000,
         selfattention_layer_type: str = "rel_selfattn",
         key_bias: bool = True,
         # mlp
@@ -180,7 +181,8 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
             dropout_rate,
             COSYVOICE_EMB_CLASSES[pos_enc_layer_type](
                 output_size,
-                positional_dropout_rate
+                positional_dropout_rate,
+                pos_max_len,
             ),
         )
 
@@ -230,7 +232,8 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
             dropout_rate,
             COSYVOICE_EMB_CLASSES[pos_enc_layer_type](
                 output_size,
-                positional_dropout_rate
+                positional_dropout_rate,
+                pos_max_len,
             ),
         )
         self.up_encoders = torch.nn.ModuleList([
@@ -406,7 +409,7 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         return xs, masks
 
     @torch.inference_mode()
-    @torch.compile(dynamic=True, backend="eager")
+    @torch.compile(dynamic=True,backend="eager")
     def forward_chunk(self,
                       xs: torch.Tensor,
                       last_chunk: bool = False,
