@@ -1,22 +1,34 @@
 import io
 import time
+import logging
+from pathlib import Path
+import wave
+
 import torch
 import torchaudio
 import s3tokenizer
 import onnxruntime
 import numpy as np
-from pathlib import Path
-import wave
 
 import torchaudio.compliance.kaldi as kaldi
 from flashcosyvoice.modules.hifigan import HiFTGenerator
 from flashcosyvoice.utils.audio import mel_spectrogram
 from hyperpyyaml import load_hyperpyyaml
 
+def fade_in_out(fade_in_mel:torch.Tensor, fade_out_mel:torch.Tensor, window:torch.Tensor):
+    """perform fade_in_out in tensor style
+    """
+    mel_overlap_len = int(window.shape[0] / 2)
+    fade_in_mel = fade_in_mel.clone()
+    fade_in_mel[..., :mel_overlap_len] = \
+        fade_in_mel[..., :mel_overlap_len] * window[:mel_overlap_len] + \
+        fade_out_mel[..., -mel_overlap_len:] * window[mel_overlap_len:]
+    return fade_in_mel
+
 
 class Token2wav():
 
-    def __init__(self, model_path, float16=False):
+    def __init__(self, model_path, float16=False, **kwargs):
         self.float16 = float16
 
         self.audio_tokenizer = s3tokenizer.load_model(f"{model_path}/speech_tokenizer_v2_25hz.onnx")
@@ -45,6 +57,16 @@ class Token2wav():
         self.hift.to(self.device).eval()
 
         self.cache = {}
+        self.stream_cache = None
+
+        # stream conf
+        self.mel_cache_len = 8  # hard-coded, 160ms
+        self.source_cache_len = int(self.mel_cache_len * 480)   # 50hz mel -> 24kHz wave
+        self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).to(self.device)
+
+        # hifigan cache
+        self.hift_cache_dict = {}
+
 
     def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
@@ -62,12 +84,10 @@ class Token2wav():
         audio = audio.mean(dim=0, keepdim=True)  # [1, T]
         if sample_rate != 24000:
             audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
-        prompt_mel = mel_spectrogram(audio)# [1, num_mels, T]
-        prompt_mel = prompt_mel.transpose(1, 2)  # [1, T, num_mels]
-        # prompt_mel = prompt_mel.squeeze(0)  # [T, num_mels]
-        prompt_mels = prompt_mel.to(self.device)
-        # print(audio.shape, prompt_mels.shape)
+        prompt_mel = mel_spectrogram(audio).transpose(1, 2).squeeze(0)  # [T, num_mels]
+        prompt_mels = prompt_mel.unsqueeze(0).to(self.device)
         prompt_mels_lens = torch.tensor([prompt_mels.shape[1]], dtype=torch.int32, device=self.device)
+        prompt_mels = torch.nn.functional.pad(prompt_mels, (0, 0, 0, prompt_speech_tokens.shape[1] * self.flow.up_rate - prompt_mels.shape[1]), mode='replicate')
         return prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens
 
     def __call__(self, generated_speech_tokens, prompt_wav):
@@ -93,12 +113,15 @@ class Token2wav():
         if prompt_wav not in self.cache:
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
         prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
-        token = torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1)
-        size = (token.shape[1] - self.flow.pre_lookahead_len) * self.flow.up_rate
-        if size > prompt_mels.shape[1]:
-            #print("prompt_mels pad", size, prompt_mels.shape[1])
-            prompt_mels = torch.nn.functional.pad(prompt_mels, (0, 0, 0, size - prompt_mels.shape[1]))
-        self.stream_cache = self.flow.setup_cache(token, prompt_mels, spk_emb, n_timesteps=10)
+        self.stream_cache = self.flow.setup_cache(
+            torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1),
+            prompt_mels, spk_emb, n_timesteps=10)
+        # hift cache
+        self.hift_cache_dict = dict(
+            mel = torch.zeros(1, prompt_mels.shape[2], 0, device=self.device), 
+            source = torch.zeros(1, 1, 0, device=self.device),
+            speech = torch.zeros(1, 0, device=self.device),
+        )
 
     def stream(self, generated_speech_tokens, prompt_wav, last_chunk=False):
         if prompt_wav not in self.cache:
@@ -109,7 +132,9 @@ class Token2wav():
         generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device=self.device)
 
         if self.stream_cache is None:
-            raise ValueError("stream_cache is not set")
+            # raise ValueError("stream_cache is not set")
+            logging.warning("stream_cache is not set, then set it")
+            self.set_stream_cache(prompt_wav)
 
         with torch.amp.autocast(self.device, dtype=torch.float16 if self.float16 else torch.float32):
             chunk_mel, self.stream_cache = self.flow.inference_chunk(
@@ -124,9 +149,29 @@ class Token2wav():
                 self.stream_cache['estimator_att_cache'][:, :, :, :, :prompt_mels.shape[1]],
                 self.stream_cache['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
+        
+        # vocoder cache
+        hift_cache_mel = self.hift_cache_dict['mel']
+        hift_cache_source = self.hift_cache_dict['source']
+        hift_cache_speech = self.hift_cache_dict['speech']
+        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
 
-        wav, _ = self.hift(speech_feat=chunk_mel)
-        wav_np = wav.cpu().numpy()
+        speech, source = self.hift(mel, hift_cache_source)
+
+        # overlap speech smooth
+        if hift_cache_speech.shape[-1] > 0:
+            speech = fade_in_out(speech, hift_cache_speech, self.speech_window)
+
+        # update vocoder cache
+        self.hift_cache_dict = dict(
+            mel = mel[..., -self.mel_cache_len:].clone().detach(),
+            source = source[:, :, -self.source_cache_len:].clone().detach(),
+            speech = speech[:, -self.source_cache_len:].clone().detach(),
+        )
+        if not last_chunk:
+            speech = speech[:, :-self.source_cache_len]
+
+        wav_np = speech.cpu().numpy()
         # Clip to [-1, 1] to avoid overflow, then scale to int16
         wav_np = np.clip(wav_np, -1.0, 1.0)
         wav_int16 = (wav_np * 32767.0).astype('<i2')  # 16-bit little-endian PCM
@@ -143,7 +188,7 @@ def test_stream(token2wav:Token2wav):
     pcm = b""
     CHUNK_SIZE = 25
 
-    output_file = Path("output-chunks-stream-tts.wav")
+    output_file = Path("output_chunks_stream_tts.wav")
     output_file.unlink(missing_ok=True)
 
     for audio_token_id in tokens:
@@ -183,9 +228,8 @@ TEST_FUNC=test_stream python -m token2wav
 if __name__ == '__main__':
     import os
 
-    # huggingface-cli download stepfun-ai/Step-Audio-2-mini --include token2wav/ --local-dir ./models/stepfun-ai/Step-Audio-2-mini
-    token2wav = Token2wav('models/stepfun-ai/Step-Audio-2-mini/token2wav')
+    # huggingface-cli download stepfun-ai/Step-Audio-2-mini --include token2wav/ --local-dir Step-Audio-2-mini
+    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
 
     test_func = os.getenv("TEST_FUNC","test_token2wav")
     globals()[test_func](token2wav)
-
