@@ -30,7 +30,7 @@ class Token2wav():
     CHUNK_SIZE = 25
     WARMUP_TOKENS = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
 
-    def __init__(self, model_path, float16=False, warmup_cn:int=2, prompt_wav:str="assets/default_female.wav", **kwargs):
+    def __init__(self, model_path, float16=False, prompt_wav:str="assets/default_female.wav", **kwargs):
         self.float16 = float16
 
         logging.info(f"init token2wav ...")
@@ -74,15 +74,10 @@ class Token2wav():
         # hifigan cache
         self.hift_cache_dict = {}
 
+        if kwargs.get("warmup_cn", 0) > 0:
+            self.warmup(prompt_wav, kwargs.get("warmup_cn"))
 
-        self.set_stream_cache(prompt_wav)
-        if warmup_cn > 0:
-            for i in range(warmup_cn):
-                start = time.time()
-                self.warmup(prompt_wav)
-                logging.info(f"Token2wav warmup {i=} done in {time.time() - start:.3f}s")
-
-
+        self._verbose = kwargs.get("verbose", False)
 
     def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
@@ -195,14 +190,21 @@ class Token2wav():
         pcm_bytes = wav_int16.tobytes()
         return pcm_bytes
     
-    def warmup(self, prompt_wav):
-        self.stream(self.WARMUP_TOKENS[:self.CHUNK_SIZE + self.flow.pre_lookahead_len], prompt_wav=prompt_wav) # Warm up
+    def warmup(self, prompt_wav, warmup_cn:int=2):
+        if warmup_cn > 0:
+            for i in range(warmup_cn):
+                start = time.time()
+                self.stream(self.WARMUP_TOKENS[:self.CHUNK_SIZE + self.flow.pre_lookahead_len], prompt_wav=prompt_wav) # Warm up
+                logging.info(f"Token2wav warmup {i=} done in {time.time() - start:.3f}s")
+            # NOTE: reset stream cache
+            self.set_stream_cache(prompt_wav)
+
 
 def test_stream(token2wav: Token2wav):
     prompt_wav = "assets/default_male.wav"
     #prompt_wav = "assets/default_female.wav"
     token2wav.set_stream_cache(prompt_wav)
-    token2wav.warmup(prompt_wav)
+    token2wav.warmup(prompt_wav, warmup_cn=2)
 
     buffer = []
     pcm = b""
