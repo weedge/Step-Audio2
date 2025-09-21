@@ -92,7 +92,7 @@ class Token2wav():
             None, {self.spk_model.get_inputs()[0].name: spk_feat.unsqueeze(dim=0).cpu().numpy()}
         )[0], device=self.device)
 
-        audio, sample_rate = torchaudio.load(prompt_wav, backend='ffmpeg')
+        audio, sample_rate = torchaudio.load(prompt_wav, backend='soundfile')
         audio = audio.mean(dim=0, keepdim=True)  # [1, T]
         if sample_rate != 24000:
             audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
