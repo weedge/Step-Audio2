@@ -38,11 +38,12 @@ class StepAudio2:
         with requests.post(self.api_url, headers=headers, json=payload, stream=stream) as response:
             response.raise_for_status()
             for line in response.iter_lines():
+                #print(f"{line=}", flush=True)
                 if line == b'':
                     continue
                 line = line.decode('utf-8')[6:] if stream else line.decode('utf-8')
                 if line == '[DONE]':
-                    continue
+                    break
                 line = json.loads(line)['choices'][0]['delta' if stream else 'message']
                 text = line.get('tts_content', {}).get('tts_text', None)
                 text = text if text else line['content']
